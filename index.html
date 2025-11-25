@@ -49,6 +49,138 @@
 
         const LOCAL_STORAGE_KEY = 'online_exam_questions';
 
+        // --- DADOS INICIAIS ---
+        /**
+         * Questões pré-definidas para popular o LocalStorage na primeira execução.
+         * 10 Questões de Lógica Computacional
+         * 10 Questões de Introdução à Computação
+         */
+        const initialQuestions = [
+            // --- LÓGICA COMPUTACIONAL (10 Questões) ---
+            {
+                id: 'lc_1', subject: 'LÓGICA COMPUTACIONAL',
+                question: 'Qual é o resultado da operação lógica "A AND B" se A é Verdadeiro (1) e B é Falso (0)?',
+                options: ['Verdadeiro (1)', 'Falso (0)', 'Indefinido', 'Não é possível operar'],
+                answerIndex: 1
+            },
+            {
+                id: 'lc_2', subject: 'LÓGICA COMPUTACIONAL',
+                question: 'A porta lógica NOT realiza qual operação fundamental?',
+                options: ['Multiplicação', 'Adição', 'Negação (Inversão)', 'Comparação'],
+                answerIndex: 2
+            },
+            {
+                id: 'lc_3', subject: 'LÓGICA COMPUTACIONAL',
+                question: 'Na Álgebra Booleana, qual é a representação da identidade para a operação OR (Adição Lógica)?',
+                options: ['0', '1', 'A', 'Nenhuma das anteriores'],
+                answerIndex: 0
+            },
+            {
+                id: 'lc_4', subject: 'LÓGICA COMPUTACIONAL',
+                question: 'Qual dos seguintes é um conjunto finito e ordenado de passos para resolver um problema?',
+                options: ['Variável', 'Algoritmo', 'Estrutura de Dados', 'Compilador'],
+                answerIndex: 1
+            },
+            {
+                id: 'lc_5', subject: 'LÓGICA COMPUTACIONAL',
+                question: 'Um loop "For" é um exemplo de qual tipo de estrutura de programação?',
+                options: ['Estrutura Condicional', 'Estrutura Sequencial', 'Estrutura de Repetição', 'Estrutura de Decisão'],
+                answerIndex: 2
+            },
+            {
+                id: 'lc_6', subject: 'LÓGICA COMPUTACIONAL',
+                question: 'Qual estrutura de controle permite que o programa execute um bloco de código se uma condição for verdadeira e outro bloco se for falsa?',
+                options: ['While', 'Case', 'IF/ELSE', 'For'],
+                answerIndex: 2
+            },
+            {
+                id: 'lc_7', subject: 'LÓGICA COMPUTACIONAL',
+                question: 'Segundo a Lei de De Morgan, a negação de (A AND B) é equivalente a:',
+                options: ['NOT A AND NOT B', 'NOT A OR NOT B', 'A OR NOT B', 'A AND NOT B'],
+                answerIndex: 1
+            },
+            {
+                id: 'lc_8', subject: 'LÓGICA COMPUTACIONAL',
+                question: 'Quantos bits são necessários para representar o número 5 em binário?',
+                options: ['1 bit', '2 bits', '3 bits', '4 bits'],
+                answerIndex: 2
+            },
+            {
+                id: 'lc_9', subject: 'LÓGICA COMPUTACIONAL',
+                question: 'Se A = 1 (Verdadeiro) e B = 0 (Falso), qual o resultado da expressão lógica "NOT (A OR B)"?',
+                options: ['1 (Verdadeiro)', '0 (Falso)', 'A', 'B'],
+                answerIndex: 1
+            },
+            {
+                id: 'lc_10', subject: 'LÓGICA COMPUTACIONAL',
+                question: 'Qual o valor decimal do número binário 1010?',
+                options: ['8', '10', '12', '16'],
+                answerIndex: 1
+            },
+
+            // --- INTRODUÇÃO A COMPUTAÇÃO (10 Questões) ---
+            {
+                id: 'ic_1', subject: 'INTRODUÇÃO A COMPUTAÇÃO',
+                question: 'Qual dos seguintes é considerado um componente de hardware?',
+                options: ['Sistema Operacional', 'Processador (CPU)', 'Navegador Web', 'Planilha Eletrônica'],
+                answerIndex: 1
+            },
+            {
+                id: 'ic_2', subject: 'INTRODUÇÃO A COMPUTAÇÃO',
+                question: 'Qual componente é o "cérebro" do computador, responsável por executar as instruções dos programas?',
+                options: ['Memória RAM', 'Placa Mãe', 'Unidade Central de Processamento (CPU)', 'Disco Rígido (HD)'],
+                answerIndex: 2
+            },
+            {
+                id: 'ic_3', subject: 'INTRODUÇÃO A COMPUTAÇÃO',
+                question: 'A memória volátil, que armazena dados temporariamente enquanto o computador está ligado, é chamada de:',
+                options: ['ROM', 'HD', 'RAM', 'SSD'],
+                answerIndex: 2
+            },
+            {
+                id: 'ic_4', subject: 'INTRODUÇÃO A COMPUTAÇÃO',
+                question: 'Qual software é responsável por gerenciar os recursos de hardware e fornecer uma interface para o usuário?',
+                options: ['Aplicativo de Texto', 'Antivírus', 'Sistema Operacional', 'Driver de Vídeo'],
+                answerIndex: 2
+            },
+            {
+                id: 'ic_5', subject: 'INTRODUÇÃO A COMPUTAÇÃO',
+                question: 'Qual é a menor unidade de informação que pode ser armazenada ou transmitida digitalmente?',
+                options: ['Byte', 'Kilobyte', 'Bit', 'Megabyte'],
+                answerIndex: 2
+            },
+            {
+                id: 'ic_6', subject: 'INTRODUÇÃO A COMPUTAÇÃO',
+                question: 'O teclado e o rato são exemplos clássicos de quais tipos de dispositivos?',
+                options: ['Saída', 'Processamento', 'Armazenamento', 'Entrada'],
+                answerIndex: 3
+            },
+            {
+                id: 'ic_7', subject: 'INTRODUÇÃO A COMPUTAÇÃO',
+                question: 'Qual termo descreve o serviço de disponibilização de recursos de computação (como servidores, armazenamento e softwares) pela internet?',
+                options: ['Internet das Coisas', 'Criptografia', 'Computação em Nuvem', 'Realidade Virtual'],
+                answerIndex: 2
+            },
+            {
+                id: 'ic_8', subject: 'INTRODUÇÃO A COMPUTAÇÃO',
+                question: 'Um monitor ou uma impressora são considerados dispositivos de:',
+                options: ['Entrada', 'Saída', 'Armazenamento', 'Processamento'],
+                answerIndex: 1
+            },
+            {
+                id: 'ic_9', subject: 'INTRODUÇÃO A COMPUTAÇÃO',
+                question: 'Qual é o termo para um conjunto de regras (sintaxe e semântica) usado para escrever instruções que um computador pode executar?',
+                options: ['Algoritmo', 'Linguagem Natural', 'Linguagem de Máquina', 'Linguagem de Programação'],
+                answerIndex: 3
+            },
+            {
+                id: 'ic_10', subject: 'INTRODUÇÃO A COMPUTAÇÃO',
+                question: 'O que é um software?',
+                options: ['Componentes físicos do computador (hardware)', 'Conjunto de instruções que fazem o hardware funcionar', 'Local de armazenamento permanente de dados', 'Placa de circuito impresso'],
+                answerIndex: 1
+            }
+        ];
+
         // --- LÓGICA DE PERSISTÊNCIA (LocalStorage) ---
 
         /**
@@ -58,6 +190,17 @@
             try {
                 const storedQuestions = localStorage.getItem(LOCAL_STORAGE_KEY);
                 state.questions = storedQuestions ? JSON.parse(storedQuestions) : [];
+
+                // Se não houver questões salvas, popula com as questões iniciais
+                if (state.questions.length === 0) {
+                    // Garante que os IDs sejam únicos mesmo que a lista inicial seja usada
+                    state.questions = initialQuestions.map(q => ({
+                        ...q,
+                        id: q.id + '_' + Math.random().toString(16).slice(2, 5) // Adiciona um sufixo aleatório
+                    }));
+                    saveQuestionsToLocal();
+                }
+
             } catch (e) {
                 console.error("Erro ao carregar questões do LocalStorage:", e);
                 state.questions = [];
@@ -658,7 +801,7 @@
                 appDiv.querySelectorAll('.btn-answer').forEach(btn => {
                     btn.onclick = (e) => {
                         const questionId = e.currentTarget.dataset.questionId;
-                        const answerIndex = parseInt(e.currentTarget.dataset.answer-index, 10);
+                        const answerIndex = parseInt(e.currentTarget.dataset.answerIndex, 10);
                         handleAnswer(questionId, answerIndex);
                         // Desabilita todos os botões após a resposta (feedback visual)
                         appDiv.querySelectorAll('.btn-answer').forEach(b => b.disabled = true);
@@ -673,7 +816,7 @@
             // Gera um ID de sessão (substituindo o ID de utilizador real)
             state.userId = 'LOCAL_USER_' + Math.random().toString(16).slice(2, 8).toUpperCase();
 
-            // Carrega as questões do LocalStorage
+            // Carrega as questões do LocalStorage (e popula se estiver vazio)
             loadQuestionsFromLocal();
 
             // Renderiza a primeira vista
