@@ -1,0 +1,666 @@
+import React, { useState, useEffect, useCallback, useMemo } from 'react';
+import { initializeApp } from 'firebase/app';
+import { getAuth, signInAnonymously, signInWithCustomToken, onAuthStateChanged } from 'firebase/auth';
+import { getFirestore, collection, onSnapshot, addDoc, setDoc, doc, deleteDoc, query, where, getDocs } from 'firebase/firestore';
+
+// --- CONFIGURAÇÃO FIREBASE E VARIÁVEIS GLOBAIS ---
+// Estas variáveis são fornecidas automaticamente pelo ambiente Canvas.
+const appId = typeof __app_id !== 'undefined' ? __app_id : 'default-app-id';
+const firebaseConfig = typeof __firebase_config !== 'undefined' ? JSON.parse(__firebase_config) : {};
+const initialAuthToken = typeof __initial_auth_token !== 'undefined' ? __initial_auth_token : null;
+
+// Funções utilitárias para o Firebase
+const initializeFirebase = () => {
+  const app = initializeApp(firebaseConfig);
+  const db = getFirestore(app);
+  const auth = getAuth(app);
+  return { db, auth };
+};
+
+// Coleção pública para o banco de questões
+const getQuestionsCollectionPath = () => `/artifacts/${appId}/public/data/questions`;
+
+// --- COMPONENTES AUXILIARES ---
+
+const LoadingSpinner = () => (
+  <div className="flex justify-center items-center h-full">
+    <div className="animate-spin rounded-full h-12 w-12 border-b-2 border-indigo-500"></div>
+    <p className="ml-4 text-gray-600">Carregando...</p>
+  </div>
+);
+
+const SubjectPill = ({ subject, count, onClick, isSelected }) => (
+    <button
+        onClick={() => onClick(subject)}
+        className={`px-4 py-2 m-1 font-semibold rounded-full transition duration-150 ease-in-out shadow-md
+        ${isSelected
+            ? 'bg-indigo-600 text-white hover:bg-indigo-700'
+            : 'bg-indigo-100 text-indigo-800 hover:bg-indigo-200'
+        }
+    `}
+    >
+        {subject} ({count})
+    </button>
+);
+
+const QuestionCard = ({ question, index, total, onAnswer }) => {
+    const [selectedOption, setSelectedOption] = useState(null);
+
+    const handleSelect = (optionIndex) => {
+        setSelectedOption(optionIndex);
+        onAnswer(question.id, optionIndex);
+    };
+
+    return (
+        <div className="bg-white p-6 rounded-xl shadow-xl w-full max-w-2xl mx-auto">
+            <div className="text-lg font-bold text-indigo-700 mb-4">
+                Questão {index + 1} de {total}
+            </div>
+            <p className="text-gray-800 mb-6 font-medium text-xl leading-relaxed">
+                {question.question}
+            </p>
+            <div className="space-y-3">
+                {question.options.map((option, i) => (
+                    <button
+                        key={i}
+                        onClick={() => handleSelect(i)}
+                        className={`w-full text-left p-4 rounded-lg border-2 transition duration-150 ease-in-out
+                            ${selectedOption === i
+                                ? 'bg-indigo-500 border-indigo-500 text-white shadow-lg scale-[1.02]'
+                                : 'bg-white border-gray-200 text-gray-700 hover:bg-indigo-50 hover:border-indigo-300'
+                            }
+                        `}
+                        disabled={selectedOption !== null}
+                    >
+                        <span className="font-semibold mr-2">{String.fromCharCode(65 + i)}:</span> {option}
+                    </button>
+                ))}
+            </div>
+        </div>
+    );
+};
+
+// --- FUNÇÕES DE LÓGICA DO EXAME ---
+
+const shuffleArray = (array) => {
+    let currentIndex = array.length, randomIndex;
+    let newArray = [...array];
+
+    while (currentIndex !== 0) {
+        randomIndex = Math.floor(Math.random() * currentIndex);
+        currentIndex--;
+        [newArray[currentIndex], newArray[randomIndex]] = [
+            newArray[randomIndex], newArray[currentIndex]
+        ];
+    }
+    return newArray;
+};
+
+// --- COMPONENTE PRINCIPAL (APP) ---
+
+const App = () => {
+    const [db, setDb] = useState(null);
+    const [auth, setAuth] = useState(null);
+    const [userId, setUserId] = useState(null);
+    const [isAdmin, setIsAdmin] = useState(false); // Usuário logado como admin
+    const [questions, setQuestions] = useState([]);
+    const [mode, setMode] = useState('home'); // 'home', 'admin', 'student', 'exam', 'result'
+    const [selectedSubject, setSelectedSubject] = useState(null);
+    const [examQuestions, setExamQuestions] = useState([]);
+    const [currentQuestionIndex, setCurrentQuestionIndex] = useState(0);
+    const [studentAnswers, setStudentAnswers] = useState({});
+    const [score, setScore] = useState(null);
+    const [focusLossCount, setFocusLossCount] = useState(0);
+
+    // --- 1. SETUP E AUTENTICAÇÃO FIREBASE ---
+    useEffect(() => {
+        try {
+            const { db: firestoreDb, auth: firebaseAuth } = initializeFirebase();
+            setDb(firestoreDb);
+            setAuth(firebaseAuth);
+
+            // Tenta logar com token customizado (ambiente Canvas) ou anonimamente
+            const authenticate = async () => {
+                try {
+                    if (initialAuthToken) {
+                        await signInWithCustomToken(firebaseAuth, initialAuthToken);
+                    } else {
+                        await signInAnonymously(firebaseAuth);
+                    }
+                } catch (error) {
+                    console.error("Erro na autenticação:", error);
+                    await signInAnonymously(firebaseAuth); // Fallback
+                }
+            };
+            authenticate();
+
+            // Listener para o estado de autenticação
+            const unsubscribeAuth = onAuthStateChanged(firebaseAuth, (user) => {
+                if (user) {
+                    setUserId(user.uid);
+                    // O primeiro usuário logado será o Admin (simulação simples)
+                    // Em um app real, isso exigiria um sistema de roles mais robusto no Firestore
+                    const isFirstUser = user.uid.startsWith('firebase:auth:'); // Heurística simples
+                    setIsAdmin(isFirstUser);
+                } else {
+                    setUserId(null);
+                }
+            });
+
+            return () => unsubscribeAuth();
+        } catch (error) {
+            console.error("Erro ao inicializar Firebase:", error);
+        }
+    }, []);
+
+    // --- 2. LEITURA DE DADOS EM TEMPO REAL (Question Bank) ---
+    useEffect(() => {
+        if (!db) return;
+
+        const questionsRef = collection(db, getQuestionsCollectionPath());
+
+        // Escuta em tempo real o banco de questões
+        const unsubscribe = onSnapshot(questionsRef, (snapshot) => {
+            const loadedQuestions = snapshot.docs.map(doc => ({
+                id: doc.id,
+                ...doc.data()
+            }));
+            setQuestions(loadedQuestions);
+        }, (error) => {
+            console.error("Erro ao ouvir questões:", error);
+        });
+
+        return () => unsubscribe();
+    }, [db]);
+
+    // --- 3. LÓGICA DE GERENCIAMENTO (CRUD Admin) ---
+
+    // Adicionar ou Atualizar Questão
+    const handleSaveQuestion = async (e) => {
+        e.preventDefault();
+        const form = e.target;
+        const subject = form.subject.value.trim();
+        const questionText = form.questionText.value.trim();
+        const options = [
+            form.optionA.value.trim(),
+            form.optionB.value.trim(),
+            form.optionC.value.trim(),
+            form.optionD.value.trim(),
+        ].filter(opt => opt); // Garante que opções vazias não sejam salvas
+        const answerIndex = parseInt(form.answer.value, 10);
+        const questionId = form.questionId ? form.questionId.value : null;
+
+        if (!subject || !questionText || options.length < 2 || answerIndex === -1) {
+            alert('Por favor, preencha todos os campos obrigatórios.');
+            return;
+        }
+
+        const questionData = { subject, question: questionText, options, answerIndex };
+
+        try {
+            if (questionId) {
+                // Atualizar
+                await setDoc(doc(db, getQuestionsCollectionPath(), questionId), questionData);
+            } else {
+                // Adicionar
+                await addDoc(collection(db, getQuestionsCollectionPath()), questionData);
+            }
+            form.reset();
+            setMode('admin'); // Volta para a lista
+        } catch (error) {
+            console.error("Erro ao salvar questão:", error);
+            alert("Erro ao salvar a questão. Verifique o console.");
+        }
+    };
+
+    // Deletar Questão
+    const handleDeleteQuestion = async (id) => {
+        if (!window.confirm('Tem certeza que deseja deletar esta questão?')) return;
+        try {
+            await deleteDoc(doc(db, getQuestionsCollectionPath(), id));
+        } catch (error) {
+            console.error("Erro ao deletar questão:", error);
+        }
+    };
+
+    // --- 4. LÓGICA DO EXAME ---
+
+    // Iniciar a prova
+    const startExam = (subject) => {
+        if (!subject) return;
+
+        // 1. Filtra as questões pela disciplina
+        const subjectQuestions = questions.filter(q => q.subject === subject);
+
+        if (subjectQuestions.length < 10) {
+            alert(`A disciplina "${subject}" só tem ${subjectQuestions.length} questões. Mínimo de 10 necessário para a prova.`);
+            return;
+        }
+
+        // 2. Embaralha todas e pega as primeiras 10
+        const randomQuestions = shuffleArray(subjectQuestions).slice(0, 10);
+
+        setExamQuestions(randomQuestions);
+        setStudentAnswers({});
+        setCurrentQuestionIndex(0);
+        setScore(null);
+        setFocusLossCount(0);
+        setSelectedSubject(subject);
+        setMode('exam');
+
+        // 3. Ativa o modo de tela cheia para tentar evitar a cola
+        document.documentElement.requestFullscreen().catch(err => {
+            console.warn("Não foi possível ativar tela cheia:", err);
+            // Continua mesmo sem tela cheia, mas o aviso é mantido
+        });
+    };
+
+    // Finalizar e calcular a nota
+    const finishExam = useCallback(() => {
+        // Sai da tela cheia, se estiver nela
+        if (document.fullscreenElement) {
+            document.exitFullscreen();
+        }
+
+        let correctAnswers = 0;
+        examQuestions.forEach(q => {
+            if (studentAnswers[q.id] === q.answerIndex) {
+                correctAnswers++;
+            }
+        });
+
+        const finalScore = (correctAnswers / examQuestions.length) * 10; // Nota de 0 a 10
+        setScore(finalScore);
+        setMode('result');
+        console.log(`Prova finalizada. Acertos: ${correctAnswers}. Nota: ${finalScore.toFixed(2)}`);
+    }, [examQuestions, studentAnswers]);
+
+    // Lidar com a resposta do aluno
+    const handleAnswer = (questionId, answerIndex) => {
+        setStudentAnswers(prev => ({ ...prev, [questionId]: answerIndex }));
+
+        // Passa para a próxima questão após um pequeno delay para feedback visual
+        setTimeout(() => {
+            if (currentQuestionIndex < examQuestions.length - 1) {
+                setCurrentQuestionIndex(prev => prev + 1);
+            } else {
+                finishExam(); // Fim da prova
+            }
+        }, 500);
+    };
+
+    // --- 5. LÓGICA ANTI-COLA (ANTI-CHEATING) ---
+
+    // Listener para perda de foco/visibilidade
+    const handleFocusChange = useCallback(() => {
+        if (mode !== 'exam') return;
+
+        // Verifica se perdeu o foco ou saiu da aba
+        const isFocusLost = !document.hasFocus() || document.hidden || !document.fullscreenElement;
+
+        if (isFocusLost) {
+            setFocusLossCount(prev => {
+                const newCount = prev + 1;
+                console.warn(`Tentativa de cola detectada. Contador: ${newCount}`);
+                
+                if (newCount >= 2) {
+                    alert(`AVISO CRÍTICO: Você saiu da tela cheia ou da janela pela ${newCount}ª vez. Sua prova será FINALIZADA. A nota será calculada com as respostas salvas.`);
+                    finishExam();
+                } else {
+                    alert(`AVISO: Não minimize, saia da tela cheia ou mude de aba. Próxima tentativa resultará na finalização da prova. Retorne à tela cheia agora.`);
+                    // Tenta forçar o retorno à tela cheia
+                    document.documentElement.requestFullscreen().catch(err => console.warn("Erro ao tentar restaurar tela cheia:", err));
+                }
+                return newCount;
+            });
+        }
+    }, [mode, finishExam]);
+
+    useEffect(() => {
+        if (mode === 'exam') {
+            window.addEventListener('blur', handleFocusChange); // Perdeu foco (mudou de app/janela)
+            document.addEventListener('visibilitychange', handleFocusChange); // Mudou de aba/minimizou
+            document.addEventListener('fullscreenchange', handleFocusChange); // Saiu da tela cheia
+
+            return () => {
+                window.removeEventListener('blur', handleFocusChange);
+                document.removeEventListener('visibilitychange', handleFocusChange);
+                document.removeEventListener('fullscreenchange', handleFocusChange);
+            };
+        }
+    }, [mode, handleFocusChange]);
+
+
+    // --- 6. DADOS COMPUTADOS ---
+
+    // Lista de disciplinas únicas
+    const subjects = useMemo(() => {
+        const subjectCounts = questions.reduce((acc, q) => {
+            acc[q.subject] = (acc[q.subject] || 0) + 1;
+            return acc;
+        }, {});
+        return subjectCounts;
+    }, [questions]);
+
+    // Questão atual para o modo de exame
+    const currentQuestion = examQuestions[currentQuestionIndex];
+
+    // --- 7. RENDERIZAÇÃO DE TELAS ---
+
+    if (!userId || !db) {
+        return <LoadingSpinner />;
+    }
+
+    // --- RENDERIZAÇÃO DO MODO ADMINISTRADOR (CRUD) ---
+    const AdminView = ({ isEditing, questionToEdit, setIsEditing }) => {
+        const initialFormState = isEditing ? questionToEdit : {
+            subject: '', question: '', options: ['', '', '', ''], answerIndex: -1
+        };
+
+        return (
+            <div className="p-6 bg-gray-50 min-h-screen">
+                <h1 className="text-3xl font-bold text-indigo-800 mb-6">
+                    {isEditing ? 'Editar Questão' : 'Cadastrar Nova Questão'}
+                </h1>
+
+                <form onSubmit={handleSaveQuestion} className="bg-white p-6 rounded-xl shadow-lg mb-8">
+                    {isEditing && <input type="hidden" name="questionId" defaultValue={questionToEdit.id} />}
+
+                    <div className="grid grid-cols-1 md:grid-cols-2 gap-4 mb-4">
+                        <label className="block">
+                            <span className="text-gray-700 font-semibold">Disciplina:</span>
+                            <input
+                                name="subject"
+                                type="text"
+                                defaultValue={initialFormState.subject}
+                                className="mt-1 block w-full rounded-md border-gray-300 shadow-sm p-3 border focus:ring-indigo-500 focus:border-indigo-500"
+                                placeholder="Ex: Matemática, História"
+                                required
+                            />
+                        </label>
+                        <label className="block">
+                            <span className="text-gray-700 font-semibold">Resposta Correta (Opção):</span>
+                            <select
+                                name="answer"
+                                defaultValue={initialFormState.answerIndex}
+                                className="mt-1 block w-full rounded-md border-gray-300 shadow-sm p-3 border focus:ring-indigo-500 focus:border-indigo-500"
+                                required
+                            >
+                                <option value="-1" disabled>Selecione a opção correta</option>
+                                <option value="0">Opção A</option>
+                                <option value="1">Opção B</option>
+                                <option value="2">Opção C</option>
+                                <option value="3">Opção D</option>
+                            </select>
+                        </label>
+                    </div>
+
+                    <label className="block mb-4">
+                        <span className="text-gray-700 font-semibold">Texto da Questão:</span>
+                        <textarea
+                            name="questionText"
+                            defaultValue={initialFormState.question}
+                            rows="3"
+                            className="mt-1 block w-full rounded-md border-gray-300 shadow-sm p-3 border focus:ring-indigo-500 focus:border-indigo-500"
+                            placeholder="Digite o texto completo da questão aqui..."
+                            required
+                        ></textarea>
+                    </label>
+
+                    <div className="grid grid-cols-1 md:grid-cols-2 gap-4 mb-6">
+                        {['A', 'B', 'C', 'D'].map((letter, i) => (
+                            <label key={i} className="block">
+                                <span className="text-gray-700 font-semibold">Opção {letter}:</span>
+                                <input
+                                    name={`option${letter}`}
+                                    type="text"
+                                    defaultValue={initialFormState.options[i] || ''}
+                                    className="mt-1 block w-full rounded-md border-gray-300 shadow-sm p-3 border focus:ring-indigo-500 focus:border-indigo-500"
+                                    required
+                                />
+                            </label>
+                        ))}
+                    </div>
+
+                    <div className="flex justify-end space-x-4">
+                        <button
+                            type="button"
+                            onClick={() => setIsEditing(false)}
+                            className="px-6 py-3 bg-gray-300 text-gray-800 font-bold rounded-lg shadow-md hover:bg-gray-400 transition"
+                        >
+                            Cancelar
+                        </button>
+                        <button
+                            type="submit"
+                            className="px-6 py-3 bg-indigo-600 text-white font-bold rounded-lg shadow-md hover:bg-indigo-700 transition"
+                        >
+                            {isEditing ? 'Atualizar Questão' : 'Adicionar Questão'}
+                        </button>
+                    </div>
+                </form>
+
+                <h2 className="text-2xl font-bold text-gray-700 mb-4">Banco de Questões ({questions.length})</h2>
+                {Object.keys(subjects).map(subject => (
+                    <div key={subject} className="mb-6">
+                        <h3 className="text-xl font-semibold text-indigo-600 mb-3">{subject} ({subjects[subject]})</h3>
+                        <ul className="space-y-3">
+                            {questions.filter(q => q.subject === subject).map(q => (
+                                <li key={q.id} className="p-4 bg-white border border-gray-200 rounded-lg shadow-sm flex justify-between items-start hover:bg-indigo-50 transition">
+                                    <div className="flex-1 pr-4">
+                                        <p className="text-sm text-gray-800 font-medium">{q.question}</p>
+                                        <p className="text-xs text-green-600 mt-1">
+                                            Resp: {String.fromCharCode(65 + q.answerIndex)} ({q.options[q.answerIndex]})
+                                        </p>
+                                    </div>
+                                    <div className="flex space-x-2">
+                                        <button
+                                            onClick={() => setIsEditing({ question: q })}
+                                            className="text-indigo-600 hover:text-indigo-800 font-semibold text-sm"
+                                        >
+                                            Editar
+                                        </button>
+                                        <button
+                                            onClick={() => handleDeleteQuestion(q.id)}
+                                            className="text-red-600 hover:text-red-800 font-semibold text-sm"
+                                        >
+                                            Excluir
+                                        </button>
+                                    </div>
+                                </li>
+                            ))}
+                        </ul>
+                    </div>
+                ))}
+            </div>
+        );
+    };
+
+    // --- RENDERIZAÇÃO DO MODO ESTUDANTE (Seleção de Prova) ---
+    const StudentView = () => (
+        <div className="p-6 bg-gray-50 min-h-screen flex flex-col items-center pt-10">
+            <h1 className="text-4xl font-extrabold text-indigo-800 mb-8">Portal do Aluno</h1>
+            <p className="text-xl text-gray-600 mb-6 text-center max-w-xl">
+                Selecione a disciplina para iniciar sua prova. Cada prova terá 10 questões sorteadas.
+            </p>
+            <div className="flex flex-wrap justify-center max-w-lg mb-8">
+                {Object.entries(subjects).map(([subject, count]) => (
+                    <SubjectPill
+                        key={subject}
+                        subject={subject}
+                        count={count}
+                        onClick={() => setSelectedSubject(subject)}
+                        isSelected={selectedSubject === subject}
+                    />
+                ))}
+            </div>
+
+            <button
+                onClick={() => startExam(selectedSubject)}
+                disabled={!selectedSubject || subjects[selectedSubject] < 10}
+                className={`
+                    px-8 py-4 font-extrabold text-white rounded-full transition duration-300 transform hover:scale-[1.05] shadow-lg
+                    ${selectedSubject && subjects[selectedSubject] >= 10
+                        ? 'bg-green-600 hover:bg-green-700'
+                        : 'bg-gray-400 cursor-not-allowed'
+                    }
+                `}
+            >
+                {selectedSubject
+                    ? subjects[selectedSubject] >= 10
+                        ? `Iniciar Prova de ${selectedSubject}`
+                        : `(Mínimo 10 questões) ${selectedSubject} tem apenas ${subjects[selectedSubject]}`
+                    : 'Selecione uma Disciplina'
+                }
+            </button>
+
+            <p className="mt-8 text-sm text-red-600 font-semibold border border-red-300 p-4 rounded-lg bg-red-50 max-w-md text-center">
+                ATENÇÃO: Ao iniciar a prova, você entrará em modo de tela cheia. Sair da tela cheia ou mudar de aba/aplicativo resultará na finalização do teste.
+            </p>
+        </div>
+    );
+
+    // --- RENDERIZAÇÃO DO MODO EXAME ---
+    const ExamView = () => (
+        <div className="p-4 bg-gray-100 min-h-screen flex flex-col items-center justify-center">
+            <h1 className="text-2xl font-bold text-indigo-800 mb-4">Prova: {selectedSubject}</h1>
+
+            {focusLossCount > 0 && (
+                <div className="text-center mb-4 p-3 bg-yellow-200 text-yellow-800 rounded-lg shadow-md max-w-lg">
+                    <p className="font-bold">Aviso de Foco ({focusLossCount}/2)</p>
+                    <p className="text-sm">Por favor, permaneça na tela cheia. A prova será finalizada na próxima ocorrência.</p>
+                </div>
+            )}
+
+            {currentQuestion && (
+                <QuestionCard
+                    question={currentQuestion}
+                    index={currentQuestionIndex}
+                    total={examQuestions.length}
+                    onAnswer={handleAnswer}
+                />
+            )}
+
+            <div className="mt-8 text-center text-sm text-gray-500">
+                Você respondeu {Object.keys(studentAnswers).length} de {examQuestions.length} questões.
+            </div>
+        </div>
+    );
+
+    // --- RENDERIZAÇÃO DO RESULTADO ---
+    const ResultView = () => {
+        const totalQuestions = examQuestions.length;
+        const correctAnswers = examQuestions.filter(q => studentAnswers[q.id] === q.answerIndex).length;
+
+        return (
+            <div className="p-6 bg-gray-50 min-h-screen flex flex-col items-center pt-10">
+                <div className="bg-white p-8 rounded-xl shadow-2xl w-full max-w-md text-center border-t-8 border-indigo-600">
+                    <h1 className="text-4xl font-extrabold text-indigo-800 mb-4">Resultado da Prova</h1>
+                    <p className="text-2xl text-gray-600 mb-6">Disciplina: <span className="font-semibold">{selectedSubject}</span></p>
+
+                    <div className="my-8">
+                        <p className="text-7xl font-black text-green-600">
+                            {score !== null ? score.toFixed(1) : 'N/A'}
+                        </p>
+                        <p className="text-xl font-semibold text-gray-700 mt-2">Nota Final (0 a 10)</p>
+                    </div>
+
+                    <div className="space-y-2 text-lg text-gray-700">
+                        <p>Total de Questões: <span className="font-bold">{totalQuestions}</span></p>
+                        <p>Acertos: <span className="font-bold text-green-600">{correctAnswers}</span></p>
+                        <p>Perda de Foco: <span className="font-bold text-red-500">{focusLossCount}</span></p>
+                    </div>
+
+                    {focusLossCount > 0 && (
+                        <p className="mt-4 text-sm text-red-500 italic">
+                            A prova foi finalizada antecipadamente devido à perda de foco.
+                        </p>
+                    )}
+
+                    <button
+                        onClick={() => setMode('home')}
+                        className="mt-8 w-full px-6 py-3 bg-indigo-600 text-white font-bold rounded-lg shadow-md hover:bg-indigo-700 transition"
+                    >
+                        Voltar para o Início
+                    </button>
+                </div>
+            </div>
+        );
+    };
+
+
+    // --- RENDERIZAÇÃO HOME (Seletor de Modo) ---
+    const HomeView = () => (
+        <div className="p-6 bg-gray-50 min-h-screen flex flex-col items-center justify-center text-center">
+            <h1 className="text-5xl font-extrabold text-indigo-700 mb-4">Sistema de Avaliações Online</h1>
+            <p className="text-xl text-gray-600 mb-10">Seu ID de Usuário: <span className="font-mono text-sm bg-gray-200 p-1 rounded">{userId}</span></p>
+
+            <div className="flex space-x-6">
+                <button
+                    onClick={() => setMode('student')}
+                    className="flex flex-col items-center justify-center p-8 w-48 h-48 bg-white border-4 border-indigo-500 rounded-2xl shadow-2xl hover:bg-indigo-50 transform hover:scale-[1.05] transition duration-300"
+                >
+                    <svg xmlns="http://www.w3.org/2000/svg" className="h-10 w-10 text-indigo-600 mb-2" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M14 2H6a2 2 0 00-2 2v16a2 2 0 002 2h12a2 2 0 002-2V8z"></path><polyline points="14 2 14 8 20 8"></polyline><line x1="16" y1="13" x2="8" y2="13"></line><line x1="16" y1="17" x2="8" y2="17"></line><polyline points="10 9 9 9 8 9"></polyline></svg>
+                    <span className="text-xl font-bold text-indigo-700 mt-2">Área do Aluno</span>
+                    <span className="text-sm text-gray-500 mt-1">Realizar Provas</span>
+                </button>
+
+                {isAdmin && (
+                    <button
+                        onClick={() => setMode('admin')}
+                        className="flex flex-col items-center justify-center p-8 w-48 h-48 bg-white border-4 border-green-500 rounded-2xl shadow-2xl hover:bg-green-50 transform hover:scale-[1.05] transition duration-300"
+                    >
+                        <svg xmlns="http://www.w3.org/2000/svg" className="h-10 w-10 text-green-600 mb-2" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M12 20h9"></path><path d="M16.5 3.5l-3.35 3.35a1 1 0 00-.23.47l-.46 2.05a1 1 0 01-1.12.72l-5.61 1.4a1 1 0 01-1.18-.54l-1.3-2.61a1 1 0 00-1.21-.36l-2.02.51a1 1 0 00-.73 1.14l.8 3.16a1 1 0 00.99.76h.05a1 1 0 00.86-.49l.52-1.04a1 1 0 01.9-.53l1.83.46a1 1 0 001.03-.66l.87-2.6a1 1 0 01.35-.43l.52-.39a1 1 0 00.16-1.55L19 5l-2.5-2.5z"></path></svg>
+                        <span className="text-xl font-bold text-green-700 mt-2">Área do Professor</span>
+                        <span className="text-sm text-gray-500 mt-1">Gerenciar Questões</span>
+                    </button>
+                )}
+            </div>
+            {!isAdmin && (
+                <p className="mt-6 text-sm text-gray-500">
+                    O modo Professor está visível apenas para o primeiro usuário logado (Admin).
+                </p>
+            )}
+        </div>
+    );
+
+
+    // --- SWITCH DE TELAS ---
+    let content;
+
+    switch (mode) {
+        case 'admin':
+            if (isAdmin) {
+                if (typeof isAdmin.question === 'object') {
+                    // Modo de edição de questão
+                    content = <AdminView isEditing={true} questionToEdit={isAdmin.question} setIsEditing={setIsAdmin} />;
+                } else {
+                    // Modo de lista/cadastro
+                    content = <AdminView isEditing={false} questionToEdit={null} setIsEditing={setIsAdmin} />;
+                }
+            } else {
+                content = <HomeView />; // Redireciona não-admins
+            }
+            break;
+        case 'student':
+            content = <StudentView />;
+            break;
+        case 'exam':
+            content = <ExamView />;
+            break;
+        case 'result':
+            content = <ResultView />;
+            break;
+        case 'home':
+        default:
+            content = <HomeView />;
+            break;
+    }
+
+    return (
+        <div className="min-h-screen font-sans bg-gray-50">
+            {content}
+        </div>
+    );
+};
+
+export default App;
